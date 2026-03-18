@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>소방 교육 출석 관리 시스템</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root { --fire-red: #D32F2F; --dark-gray: #333; --light-gray: #f4f4f4; }
+        body { font-family: 'Pretendard', sans-serif; margin: 0; background: var(--light-gray); }
+        header { background: var(--fire-red); color: white; padding: 1rem; text-align: center; font-weight: bold; font-size: 1.2rem; }
+        
+        .container { display: flex; height: calc(100vh - 60px); flex-wrap: wrap; }
+        .panel { flex: 1; min-width: 350px; padding: 20px; overflow-y: auto; border-right: 1px solid #ddd; }
+        
+        h2 { border-left: 5px solid var(--fire-red); padding-left: 10px; font-size: 1.1rem; }
+        .card { background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        
+        input, button { width: 100%; padding: 10px; margin: 5px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { background: var(--fire-red); color: white; border: none; cursor: pointer; font-weight: bold; }
+        button:hover { background: #b71c1c; }
+
+        .session-item { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 10px 0; }
+        .qr-btn { width: auto; padding: 5px 10px; font-size: 0.8rem; }
+
+        /* Modal */
+        #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; }
+        .modal-content { background: white; padding: 20px; border-radius: 10px; text-align: center; width: 300px; }
+    </style>
+</head>
+<body>
+
+<header>소방 행정 교육 관리 시스템</header>
+
+<div class="container">
+    <div class="panel">
+        <h2>📊 출석 현황 및 통계</h2>
+        <div class="card">
+            <canvas id="deptChart"></canvas>
+        </div>
+        <div id="attendanceList">
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>📅 교육 세션 생성</h2>
+        <div class="card">
+            <input type="date" id="eduDate">
+            <input type="text" id="eduName" placeholder="교육 명칭을 입력하세요">
+            <button onclick="createSession()">출석 세션 생성</button>
+        </div>
+
+        <h2>📋 활성 세션 목록</h2>
+        <div id="sessionList" class="card"></div>
+    </div>
+</div>
+
+<div id="modal" onclick="closeModal()">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <h3>교육 QR 코드</h3>
+        <div id="qrcode"></div>
+        <p id="qrTitle" style="font-weight:bold; margin-top:10px;"></p>
+        <button onclick="closeModal()">닫기</button>
+    </div>
+</div>
+
+<script>
+    // Supabase 설정값을 입력하세요.
+    // ⚠️ SUPABASE_URL에는 "딱 하나의" 프로젝트 URL만 넣어야 합니다.
+    const SUPABASE_URL = "https://iyfaatnwoosamimrcoix.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5ZmFhdG53b29zYW1pbXJjb2l4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MDA0MDAsImV4cCI6MjA4OTM3NjQwMH0.JXtTy56yBRTxBF1UMyr6SLRbMhQnC6YdfFuCSoqNUOE";
+
+    function validateSupabaseConfig() {
+        const url = String(SUPABASE_URL || "");
+        if (!url.startsWith("https://") || !url.includes(".supabase.co")) {
+            alert("Supabase 설정 오류: SUPABASE_URL 형식을 확인하세요.");
+            return false;
+        }
+        if (url.includes("YOUR_PROJECT") || url.includes("your_project")) {
+            alert("Supabase 설정 오류: SUPABASE_URL에 예시 문자열(YOUR_PROJECT)이 남아있습니다.");
+            return false;
+        }
+        if ((url.match(/https?:\/\//g) || []).length >= 2) {
+            alert("Supabase 설정 오류: SUPABASE_URL에 URL이 2개 이상 붙어있습니다.");
+            return false;
+        }
+        return true;
+    }
+
+    if (!validateSupabaseConfig()) {
+        throw new Error("Invalid Supabase config");
+    }
+
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // 로컬 캐시 (렌더링용)
+    let sessions = [];
+    let logs = [];
+
+    function getSessionDateValue(s) {
+        // DB마다 컬럼명이 다를 수 있어 후보를 순서대로 사용
+        return s?.date ?? s?.session_date ?? s?.edu_date ?? s?.training_date ?? null;
+    }
+
+    function escapeHtml(str) {
+        return String(str ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+    }
+
+    async function createSession() {
+        const date = document.getElementById('eduDate').value;
+        const name = document.getElementById('eduName').value;
+        if(!date || !name) return alert('정보를 입력하세요.');
+
+        // sessions.id가 uuid 타입인 경우가 많아서 uuid로 생성
+        const sessionId = (crypto?.randomUUID ? crypto.randomUUID() : null)
+          || '00000000-0000-4000-8000-' + String(Date.now()).padStart(12, '0');
+
+        // 세션 날짜 컬럼은 프로젝트마다 다를 수 있음:
+        // - session_date (NOT NULL인 경우가 흔함)
+        // - date
+        // 우선순위: session_date -> date -> (최후) 날짜 없이
+        let error = null;
+        let res;
+
+        // 1) session_date로 저장 시도
+        res = await sb.from('sessions').insert({ id: sessionId, session_date: date, name });
+        error = res.error;
+
+        // 2) session_date 컬럼이 없으면 date로 저장 시도
+        const msg1 = String(error?.message || "");
+        const sessionDateMissing =
+            (error && error.code === '42703' && msg1.includes('sessions.session_date')) ||
+            (error && error.code === 'PGRST204' && msg1.includes("'session_date'"));
+        if (sessionDateMissing) {
+            res = await sb.from('sessions').insert({ id: sessionId, date, name });
+            error = res.error;
+        }
+
+        // 3) date 컬럼도 없으면 날짜 없이 저장 시도
+        const msg2 = String(error?.message || "");
+        const dateMissing =
+            (error && error.code === '42703' && msg2.includes('sessions.date')) ||
+            (error && error.code === 'PGRST204' && msg2.includes("'date'"));
+        if (dateMissing) {
+            res = await sb.from('sessions').insert({ id: sessionId, name });
+            error = res.error;
+        }
+
+        if (error) { console.error(error); return alert('세션 생성 실패: ' + error.message); }
+        await loadSessions();
+        alert('세션이 생성되었습니다.');
+    }
+
+    function renderSessions() {
+        const list = document.getElementById('sessionList');
+        list.innerHTML = sessions.map(s => `
+            <div class="session-item">
+                <span>[${getSessionDateValue(s) ?? '-'}] ${s.name}</span>
+                <button class="qr-btn" onclick="showQR('${s.id}', '${s.name}')">QR 보기</button>
+            </div>
+        `).join('');
+    }
+
+    function showQR(id, name) {
+        const url = new URL('qrcheck.html', window.location.href);
+        url.searchParams.set('id', id);
+        const qrImg = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url.toString())}`;
+        document.getElementById('qrcode').innerHTML = `<img src="${qrImg}" />`;
+        document.getElementById('qrTitle').innerText = name;
+        document.getElementById('modal').style.display = 'flex';
+    }
+
+    function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+    // 차트 및 현황 업데이트 (Supabase 데이터)
+    function updateDashboard() {
+        const deptData = {};
+        logs.forEach(l => {
+            const key = l.dept || '미지정';
+            deptData[key] = (deptData[key] || 0) + 1;
+        });
+
+        const ctx = document.getElementById('deptChart').getContext('2d');
+        if(window.myChart) window.myChart.destroy();
+        window.myChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(deptData),
+                datasets: [{ label: '부서별 인원', data: Object.values(deptData), backgroundColor: '#D32F2F' }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+            }
+        });
+    }
+
+    function renderAttendanceList() {
+        const el = document.getElementById('attendanceList');
+        if (!logs.length) {
+            el.innerHTML = `<div class="card"><div style="color:#666;">출석 데이터가 없습니다.</div></div>`;
+            return;
+        }
+
+        const rows = logs.slice(0, 30).map(l => {
+            const sessionName = sessions.find(s => s.id === l.sessionId)?.name || '세션';
+            const timeText = l.time ? new Date(l.time).toLocaleString() : '';
+            return `
+              <div class="card" style="margin-bottom:10px;">
+                <div style="font-weight:bold; color:var(--dark-gray);">${escapeHtml(sessionName)}</div>
+                <div style="margin-top:6px; font-size:0.95rem;">
+                  <span style="color:var(--fire-red); font-weight:bold;">${escapeHtml(l.dept)}</span>
+                  · ${escapeHtml(l.name)}
+                </div>
+                <div style="margin-top:6px; font-size:0.85rem; color:#666;">${escapeHtml(timeText)}</div>
+              </div>
+            `;
+        }).join('');
+
+        el.innerHTML = rows;
+    }
+
+    async function loadSessions() {
+        // date 컬럼이 없을 수 있으므로 정렬 폴백 처리
+        let res = await sb.from('sessions').select('*').order('session_date', { ascending: false });
+        if (res.error) {
+            const m = String(res.error.message || "");
+            const missingSessionDate = (res.error.code === '42703' && m.includes('sessions.session_date')) || (res.error.code === 'PGRST204' && m.includes("'session_date'"));
+            if (missingSessionDate) {
+                res = await sb.from('sessions').select('*').order('date', { ascending: false });
+            }
+        }
+        if (res.error) {
+            const m = String(res.error.message || "");
+            const missingDate = (res.error.code === '42703' && m.includes('sessions.date')) || (res.error.code === 'PGRST204' && m.includes("'date'"));
+            if (missingDate) {
+                // created_at이 있다면 그걸로 정렬
+                res = await sb.from('sessions').select('*').order('created_at', { ascending: false });
+            }
+        }
+        if (res.error) {
+            // 최후: name으로 정렬
+            res = await sb.from('sessions').select('*').order('name', { ascending: false });
+        }
+        if (res.error) { console.error(res.error); alert('세션 불러오기 실패: ' + res.error.message); return; }
+        sessions = res.data || [];
+        renderSessions();
+    }
+
+    async function loadAttendance() {
+        const { data, error } = await sb.from('attendance').select('*').order('checked_at', { ascending: false });
+        if (error) { console.error(error); alert('출석 불러오기 실패'); return; }
+        logs = (data || []).map(r => ({ dept: r.dept, name: r.name, sessionId: r.session_id, time: r.checked_at }));
+        updateDashboard();
+        renderAttendanceList();
+    }
+
+    function subscribeRealtime() {
+        try {
+            sb.channel('attendance-realtime')
+              .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, (payload) => {
+                  const r = payload.new;
+                  logs.unshift({ dept: r.dept, name: r.name, sessionId: r.session_id, time: r.checked_at });
+                  updateDashboard();
+                  renderAttendanceList();
+              })
+              .subscribe();
+        } catch (e) {
+            console.warn('realtime subscribe 실패', e);
+        }
+    }
+
+    window.onload = async () => {
+        await loadSessions();
+        await loadAttendance();
+        subscribeRealtime();
+    };
+</script>
+</body>
+</html>

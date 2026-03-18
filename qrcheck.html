@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>출석 확인 - 소방 교육</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root { --fire-red: #D32F2F; }
+        body { font-family: 'Pretendard', sans-serif; margin: 0; background: #eee; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .check-card { background: white; width: 90%; max-width: 400px; padding: 30px; border-radius: 15px; box-shadow: 0 10px 20px rgba(0,0,0,0.2); text-align: center; }
+        .logo { color: var(--fire-red); font-size: 3rem; margin-bottom: 10px; }
+        input, select, button { width: 100%; padding: 12px; margin: 10px 0; border-radius: 5px; border: 1px solid #ccc; font-size: 1rem; }
+        button { background: var(--fire-red); color: white; border: none; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div class="check-card">
+    <div class="logo">🚒</div>
+    <h2 id="eduTitle">교육 출석 등록</h2>
+    <p id="eduDate" style="color:#666;"></p>
+    <hr>
+    <select id="userDept">
+        <option value="">부서 선택</option>
+        <option value="소방행정과">소방행정과</option>
+        <option value="재난대응과">재난대응과</option>
+        <option value="현장대응단">현장대응단</option>
+        <option value="예방안전과">예방안전과</option>
+    </select>
+    <input type="text" id="userName" placeholder="이름을 입력하세요">
+    <button onclick="submitAttendance()">출석 확인</button>
+</div>
+
+<script>
+    // Supabase 설정값을 입력하세요.
+    const SUPABASE_URL = "https://iyfaatnwoosamimrcoix.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml5ZmFhdG53b29zYW1pbXJjb2l4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MDA0MDAsImV4cCI6MjA4OTM3NjQwMH0.JXtTy56yBRTxBF1UMyr6SLRbMhQnC6YdfFuCSoqNUOE";
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('id');
+    let currentSession = null;
+
+    async function loadSession() {
+        const { data, error } = await sb.from('sessions').select('*').eq('id', sessionId).maybeSingle();
+        if (error || !data) {
+            alert('유효하지 않은 세션입니다.');
+            return;
+        }
+        currentSession = data;
+        document.getElementById('eduTitle').innerText = currentSession.name || '';
+        const dateValue = currentSession.date ?? currentSession.session_date ?? currentSession.edu_date ?? currentSession.training_date ?? '';
+        document.getElementById('eduDate').innerText = dateValue || '';
+    }
+
+    async function submitAttendance() {
+        const name = document.getElementById('userName').value.trim();
+        const dept = document.getElementById('userDept').value.trim();
+        if(!name || !dept) return alert('이름과 부서를 모두 입력해주세요.');
+        if(!currentSession) return alert('세션 정보를 불러오지 못했습니다.');
+
+        const { error } = await sb.from('attendance').insert({
+            session_id: currentSession.id,
+            name, dept,
+            checked_at: new Date().toISOString()
+        });
+        if (error) {
+            console.error(error);
+            return alert('출석 저장 실패: ' + error.message);
+        }
+        alert(`${name}님, 출석 처리가 완료되었습니다.`);
+        document.querySelector('.check-card').innerHTML = `<h2>✅ 출석 완료</h2><p>${name} 소방교님, 안전!</p>`;
+    }
+
+    loadSession();
+</script>
+</body>
+</html>
